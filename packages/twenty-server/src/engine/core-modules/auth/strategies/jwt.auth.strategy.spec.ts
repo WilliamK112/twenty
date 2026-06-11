@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 
 import { msg } from '@lingui/core/macro';
+import { WorkspaceActivationStatus } from 'twenty-shared/workspace';
 
 import {
   AuthException,
@@ -107,6 +108,7 @@ describe('JwtAuthStrategy', () => {
         return null;
       }),
       invalidate: jest.fn(),
+      invalidateAndRecompute: jest.fn(),
     };
   });
 
@@ -331,6 +333,129 @@ describe('JwtAuthStrategy', () => {
 
       expect(user.user?.lastName).toBe('lastNameDefault');
       expect(user.userWorkspaceId).toBe(validUserWorkspaceId);
+    });
+
+    it('should recompute the cached workspace when its activation status is transient', async () => {
+      const validUserId = 'valid-user-id';
+      const validUserWorkspaceId = randomUUID();
+      const validWorkspaceId = randomUUID();
+
+      const payload = {
+        sub: validUserId,
+        type: JwtTokenTypeEnum.ACCESS,
+        userWorkspaceId: validUserWorkspaceId,
+        workspaceId: validWorkspaceId,
+      };
+
+      const staleWorkspace = new WorkspaceEntity();
+
+      staleWorkspace.id = validWorkspaceId;
+      staleWorkspace.activationStatus =
+        WorkspaceActivationStatus.PENDING_CREATION;
+
+      const freshWorkspace = new WorkspaceEntity();
+
+      freshWorkspace.id = validWorkspaceId;
+      freshWorkspace.activationStatus = WorkspaceActivationStatus.ACTIVE;
+
+      workspaceStore[validWorkspaceId] = staleWorkspace;
+      userStore[validUserId] = { id: validUserId };
+
+      coreEntityCacheService.get.mockImplementation(
+        async (keyName: string, entityId: string) => {
+          if (keyName === 'workspaceEntity') {
+            return workspaceStore[entityId] ?? null;
+          }
+
+          if (keyName === 'user') {
+            return userStore[entityId] ?? null;
+          }
+
+          if (keyName === 'userWorkspaceEntity') {
+            return {
+              id: validUserWorkspaceId,
+              workspaceId: validWorkspaceId,
+              user: { id: validUserId },
+              workspace: { id: validWorkspaceId },
+            };
+          }
+
+          return null;
+        },
+      );
+
+      coreEntityCacheService.invalidateAndRecompute.mockImplementation(
+        async (_keyName: string, entityId: string) => {
+          workspaceStore[entityId] = freshWorkspace;
+        },
+      );
+
+      strategy = createStrategy();
+
+      const context = await strategy.validate(payload as JwtPayload);
+
+      expect(
+        coreEntityCacheService.invalidateAndRecompute,
+      ).toHaveBeenCalledWith('workspaceEntity', validWorkspaceId);
+      expect(context.workspace?.activationStatus).toBe(
+        WorkspaceActivationStatus.ACTIVE,
+      );
+      expect(context.workspaceMember?.id).toBe('workspace-member-id');
+    });
+
+    it('should not recompute the cached workspace when its activation status is not transient', async () => {
+      const validUserId = 'valid-user-id';
+      const validUserWorkspaceId = randomUUID();
+      const validWorkspaceId = randomUUID();
+
+      const payload = {
+        sub: validUserId,
+        type: JwtTokenTypeEnum.ACCESS,
+        userWorkspaceId: validUserWorkspaceId,
+        workspaceId: validWorkspaceId,
+      };
+
+      const activeWorkspace = new WorkspaceEntity();
+
+      activeWorkspace.id = validWorkspaceId;
+      activeWorkspace.activationStatus = WorkspaceActivationStatus.ACTIVE;
+
+      workspaceStore[validWorkspaceId] = activeWorkspace;
+      userStore[validUserId] = { id: validUserId };
+
+      coreEntityCacheService.get.mockImplementation(
+        async (keyName: string, entityId: string) => {
+          if (keyName === 'workspaceEntity') {
+            return workspaceStore[entityId] ?? null;
+          }
+
+          if (keyName === 'user') {
+            return userStore[entityId] ?? null;
+          }
+
+          if (keyName === 'userWorkspaceEntity') {
+            return {
+              id: validUserWorkspaceId,
+              workspaceId: validWorkspaceId,
+              user: { id: validUserId },
+              workspace: { id: validWorkspaceId },
+            };
+          }
+
+          return null;
+        },
+      );
+
+      strategy = createStrategy();
+
+      const context = await strategy.validate(payload as JwtPayload);
+
+      expect(
+        coreEntityCacheService.invalidateAndRecompute,
+      ).not.toHaveBeenCalled();
+      expect(context.workspace?.activationStatus).toBe(
+        WorkspaceActivationStatus.ACTIVE,
+      );
     });
 
     it('should reject when the user workspace belongs to a different workspace than the token', async () => {

@@ -60,13 +60,40 @@ export class JwtAuthStrategy extends PassportStrategy(Strategy, 'jwt') {
     });
   }
 
+  // PENDING_CREATION / ONGOING_CREATION can be a stale snapshot memoized on
+  // this instance past a sibling instance's activateWorkspace invalidation,
+  // which strips workspaceMember and permissions from the auth context and
+  // strands the client mid-onboarding. Recompute before trusting these
+  // transient statuses (same staleness as #20322).
+  private async getWorkspaceFromCache(workspaceId: string) {
+    const workspace = await this.coreEntityCacheService.get(
+      'workspaceEntity',
+      workspaceId,
+    );
+
+    const hasTransientActivationStatus =
+      isDefined(workspace) &&
+      (workspace.activationStatus ===
+        WorkspaceActivationStatus.PENDING_CREATION ||
+        workspace.activationStatus ===
+          WorkspaceActivationStatus.ONGOING_CREATION);
+
+    if (!hasTransientActivationStatus) {
+      return workspace;
+    }
+
+    await this.coreEntityCacheService.invalidateAndRecompute(
+      'workspaceEntity',
+      workspaceId,
+    );
+
+    return await this.coreEntityCacheService.get('workspaceEntity', workspaceId);
+  }
+
   private async validateAPIKey(
     payload: ApiKeyTokenJwtPayload,
   ): Promise<AuthContext> {
-    const workspace = await this.coreEntityCacheService.get(
-      'workspaceEntity',
-      payload.sub,
-    );
+    const workspace = await this.getWorkspaceFromCache(payload.sub);
 
     assertIsDefinedOrThrow(
       workspace,
@@ -106,10 +133,7 @@ export class JwtAuthStrategy extends PassportStrategy(Strategy, 'jwt') {
     let user: AuthContextUser | null = null;
     let context: AuthContext = {};
 
-    const workspace = await this.coreEntityCacheService.get(
-      'workspaceEntity',
-      payload.workspaceId,
-    );
+    const workspace = await this.getWorkspaceFromCache(payload.workspaceId);
 
     if (!isDefined(workspace)) {
       throw new AuthException(
@@ -363,10 +387,7 @@ export class JwtAuthStrategy extends PassportStrategy(Strategy, 'jwt') {
   private async validateApplicationToken(
     payload: ApplicationAccessTokenJwtPayload,
   ): Promise<AuthContext> {
-    const workspace = await this.coreEntityCacheService.get(
-      'workspaceEntity',
-      payload.workspaceId,
-    );
+    const workspace = await this.getWorkspaceFromCache(payload.workspaceId);
 
     if (!isDefined(workspace)) {
       throw new AuthException(
